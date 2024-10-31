@@ -4,15 +4,15 @@
 This script adjusts the brightness of a laptop screen based on ambient light sensor readings.
 It reads data from a specified ambient light sensor, calculates the appropriate target brightness
 (based on lux levels), and adjusts the screen brightness using `brightnessctl`. The brightness
-adjustment is done smoothly, updating one line with asterisks to represent brightness. Each
-asterisk represents 4% of brightness.
+adjustment is done smoothly, with a progress bar displayed as `[####################          ] 80%`,
+where each '#' represents 4% of brightness, and the remaining spaces complete the fixed width.
 
 Dependencies:
 - brightnessctl: A utility to read and control device brightness
 - Ambient light sensor available via the system file structure
 
-The script runs continuously, adjusting brightness in response to ambient light, with
-each update showing a timestamp, current brightness, target brightness, and lux level.
+The script runs continuously, adjusting brightness based on ambient light, with each update
+showing a timestamp, current brightness, target brightness, and lux level.
 
 GPLv3, CDTunnell 2024-10-31
 """
@@ -21,7 +21,8 @@ import os
 import time
 from datetime import datetime
 
-MAX_WIDTH = 25  # One * per 4% brightness (100/4 = 25)
+MAX_WIDTH = 25  # Number of characters in the progress bar
+FULL_BAR = 100  # Total percentage width (100%)
 
 def get_brightness():
     """
@@ -51,10 +52,10 @@ def update_display(brightness_level, target_brightness, lux):
         target_brightness (int): Target brightness level as a percentage.
         lux (int): Current ambient light level in lux.
     """
-    num_asterisks = brightness_level // 4  # One * per 4% of brightness
-    bar = '*' * num_asterisks
+    num_hashes = (brightness_level * MAX_WIDTH) // FULL_BAR  # Calculate # based on percentage
+    bar = f"[{'#' * num_hashes}{' ' * (MAX_WIDTH - num_hashes)}] {brightness_level:3}%"
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\r{current_time} | Brightness: {brightness_level:3}% | Target: {target_brightness:3}% | Lux: {lux:5} | {bar:<{MAX_WIDTH}}", end="", flush=True)
+    print(f"\r{current_time} | Brightness: {brightness_level:3}% | Target: {target_brightness:3}% | Lux: {lux:5} | {bar}", end="", flush=True)
 
 def adjust_brightness(target_brightness, lux):
     """
@@ -76,7 +77,6 @@ def adjust_brightness(target_brightness, lux):
     # Ensure final target is reached and displayed
     set_brightness(target_brightness)
     update_display(target_brightness, target_brightness, lux)
-    print()  # Final newline after reaching target
 
 def read_ambient_light(sensor_path):
     """
@@ -144,4 +144,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
