@@ -3,21 +3,25 @@
 """
 This script adjusts the brightness of a laptop screen based on ambient light sensor readings.
 It reads data from a specified ambient light sensor, calculates the appropriate target brightness
-(based on lux levels), and adjusts the screen brightness using `brightnessctl`. The brightness 
-adjustment is done smoothly, 1% at a time, and the screen brightness will never go below 1%.
+(based on lux levels), and adjusts the screen brightness using `brightnessctl`. The brightness
+adjustment is done smoothly, updating one line with asterisks to represent brightness. Each
+asterisk represents 4% of brightness.
 
 Dependencies:
 - brightnessctl: A utility to read and control device brightness
-- Ambient light sensor available via the file system
+- Ambient light sensor available via the system file structure
 
-The script runs continuously, adjusting the brightness every second.
+The script runs continuously, adjusting brightness in response to ambient light, with
+each update showing a timestamp, current brightness, target brightness, and lux level.
 
-GPLv3, CDTunnell 2024-10-30
+GPLv3, CDTunnell 2024-10-31
 """
 
 import os
 import time
 from datetime import datetime
+
+MAX_WIDTH = 25  # One * per 4% brightness (100/4 = 25)
 
 def get_brightness():
     """
@@ -28,46 +32,51 @@ def get_brightness():
     """
     current_brightness = int(os.popen("brightnessctl g").read().strip())
     max_brightness = int(os.popen("brightnessctl m").read().strip())
-    
     brightness_percent = (current_brightness * 100) // max_brightness
     return brightness_percent
 
 def set_brightness(target_brightness):
     """
     Sets the brightness to the given target percentage using brightnessctl.
-
     Args:
         target_brightness (int): The target brightness level to set (0-100).
     """
     os.system(f"brightnessctl s {target_brightness}% > /dev/null 2>&1")
 
+def update_display(brightness_level, target_brightness, lux):
+    """
+    Updates the progress bar display to show the current brightness level with timestamp.
+    Args:
+        brightness_level (int): Current brightness level as a percentage.
+        target_brightness (int): Target brightness level as a percentage.
+        lux (int): Current ambient light level in lux.
+    """
+    num_asterisks = brightness_level // 4  # One * per 4% of brightness
+    bar = '*' * num_asterisks
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\r{current_time} | Brightness: {brightness_level:3}% | Target: {target_brightness:3}% | Lux: {lux:5} | {bar:<{MAX_WIDTH}}", end="", flush=True)
+
 def adjust_brightness(target_brightness, lux):
     """
-    Adjusts the brightness smoothly to the target brightness by stepping 1% at a time.
-
+    Smoothly adjusts brightness to the target brightness in increments.
     Args:
-        target_brightness (int): The target brightness level to set (0-100).
-        lux (int): The current ambient light level in lux for reference in output.
+        target_brightness (int): Target brightness level (0-100).
+        lux (int): Current ambient light level in lux.
     """
     current_brightness = get_brightness()
-    
-    # Get current datetime for logging
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Print the current status with datetime
-    print(f"{current_time}\tAmbient Light: {lux} lux\tCurrent Brightness: {current_brightness}%\tTarget Brightness: {target_brightness}%")
-
-    # Increase or decrease brightness 1% at a time
     step = 1 if target_brightness > current_brightness else -1
 
-    for brightness in range(current_brightness, target_brightness, step):
-        set_brightness(brightness)
-        print(".", end="", flush=True)  # Print dot without newline to indicate progress
-        time.sleep(0.1)  # Sleep for 100 milliseconds between steps
-    
-    # Ensure final target is reached
+    # Loop until we reach the target brightness
+    while current_brightness != target_brightness:
+        set_brightness(current_brightness)
+        update_display(current_brightness, target_brightness, lux)
+        current_brightness += step
+        time.sleep(0.1)
+
+    # Ensure final target is reached and displayed
     set_brightness(target_brightness)
-    print()  # Newline after finishing the adjustment
+    update_display(target_brightness, target_brightness, lux)
+    print()  # Final newline after reaching target
 
 def read_ambient_light(sensor_path):
     """
@@ -102,23 +111,37 @@ def calculate_target_brightness(lux, max_lux=300):
     return max(1, (lux * 100) // max_lux)  # Minimum brightness of 1%
 
 def main():
-    """
-    Main function that adjusts the screen brightness based on ambient light sensor data.
-    """
     sensor_path = "/sys/bus/iio/devices/iio:device0/in_illuminance_raw"
-    
+
+    # Initialize previous values to ensure the first loop prints the state
+    previous_brightness = None
+    previous_target = None
+    previous_lux = None
+
     while True:
-        # Read the current ambient light value
+        # Read the current ambient light level
         lux = read_ambient_light(sensor_path)
-        
-        # Calculate the target brightness (with a minimum of 1%)
+
+        # Calculate the target brightness based on lux
         target_brightness = calculate_target_brightness(lux)
-        
-        # Adjust the brightness smoothly and print the current status
-        adjust_brightness(target_brightness, lux)
-        
-        # Sleep for 1 second before checking the light sensor again
+
+        # Check if an update is necessary (values have changed)
+        current_brightness = get_brightness()
+        if (current_brightness != previous_brightness or
+            target_brightness != previous_target or
+            lux != previous_lux):
+
+            # Adjust brightness to the target level smoothly
+            adjust_brightness(target_brightness, lux)
+
+            # Update previous values
+            previous_brightness = current_brightness
+            previous_target = target_brightness
+            previous_lux = lux
+
+        # Sleep for 1 second before checking again
         time.sleep(1)
 
 if __name__ == "__main__":
     main()
+
