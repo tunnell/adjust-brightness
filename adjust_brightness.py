@@ -1,148 +1,100 @@
 #!/usr/bin/env python3
 
-"""
-This script adjusts the brightness of a laptop screen based on ambient light sensor readings.
-It reads data from a specified ambient light sensor, calculates the appropriate target brightness
-(based on lux levels), and adjusts the screen brightness using `brightnessctl`. The brightness
-adjustment is done smoothly, with a progress bar displayed as `[####################          ] 80%`,
-where each '#' represents 4% of brightness, and the remaining spaces complete the fixed width.
-
-Dependencies:
-- brightnessctl: A utility to read and control device brightness
-- Ambient light sensor available via the system file structure
-
-The script runs continuously, adjusting brightness based on ambient light, with each update
-showing a timestamp, current brightness, target brightness, and lux level.
-
-GPLv3, CDTunnell 2024-10-31
-"""
-
 import os
 import time
+import logging
+import argparse
 from datetime import datetime
 
 MAX_WIDTH = 25  # Number of characters in the progress bar
 FULL_BAR = 100  # Total percentage width (100%)
 
-def get_brightness():
-    """
-    Retrieves the current brightness as a percentage using brightnessctl.
+def parse_args():
+    parser = argparse.ArgumentParser(description="Adjust screen brightness based on ambient light.")
+    parser.add_argument(
+        "-l", "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level (default: INFO)"
+    )
+    return parser.parse_args()
 
-    Returns:
-        int: The current brightness level as a percentage (0-100).
-    """
+def configure_logging(log_level):
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {log_level}")
+    logging.basicConfig(level=numeric_level, format="%(message)s")
+    logger = logging.getLogger(__name__)
+    return logger
+
+def get_brightness():
     current_brightness = int(os.popen("brightnessctl g").read().strip())
     max_brightness = int(os.popen("brightnessctl m").read().strip())
     brightness_percent = (current_brightness * 100) // max_brightness
     return brightness_percent
 
 def set_brightness(target_brightness):
-    """
-    Sets the brightness to the given target percentage using brightnessctl.
-    Args:
-        target_brightness (int): The target brightness level to set (0-100).
-    """
     os.system(f"brightnessctl s {target_brightness}% > /dev/null 2>&1")
 
-def update_display(brightness_level, target_brightness, lux):
+def update_display(brightness_level, target_brightness, lux, logger):
     """
-    Updates the progress bar display to show the current brightness level with timestamp.
-    Args:
-        brightness_level (int): Current brightness level as a percentage.
-        target_brightness (int): Target brightness level as a percentage.
-        lux (int): Current ambient light level in lux.
+    Display the brightness level and other information as a progress bar.
+    This is logged at INFO level to be the default visible output.
     """
-    num_hashes = (brightness_level * MAX_WIDTH) // FULL_BAR  # Calculate # based on percentage
+    num_hashes = (brightness_level * MAX_WIDTH) // FULL_BAR
     bar = f"[{'#' * num_hashes}{' ' * (MAX_WIDTH - num_hashes)}] {brightness_level:3}%"
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\r{current_time} | Brightness: {brightness_level:3}% | Target: {target_brightness:3}% | Lux: {lux:5} | {bar}", end="", flush=True)
+    # Using carriage return \r to overwrite the same line in the terminal
+    message = f"\r{current_time} | Brightness: {brightness_level:3}% | Target: {target_brightness:3}% | Lux: {lux:5} | {bar}"
+    print(message, end="", flush=True)  # Direct print for continuous updating effect
 
-def adjust_brightness(target_brightness, lux):
-    """
-    Smoothly adjusts brightness to the target brightness in increments.
-    Args:
-        target_brightness (int): Target brightness level (0-100).
-        lux (int): Current ambient light level in lux.
-    """
+def adjust_brightness_step(target_brightness, lux, logger):
     current_brightness = get_brightness()
+    if current_brightness == target_brightness:
+        logger.debug("Brightness is already at target.")
+        return False
+
     step = 1 if target_brightness > current_brightness else -1
+    current_brightness += step
+    set_brightness(current_brightness)
+    update_display(current_brightness, target_brightness, lux, logger)
+    return True
 
-    # Loop until we reach the target brightness
-    while current_brightness != target_brightness:
-        set_brightness(current_brightness)
-        update_display(current_brightness, target_brightness, lux)
-        current_brightness += step
-        time.sleep(0.1)
-
-    # Ensure final target is reached and displayed
-    set_brightness(target_brightness)
-    update_display(target_brightness, target_brightness, lux)
-
-def read_ambient_light(sensor_path):
-    """
-    Reads the ambient light level from the light sensor.
-
-    Args:
-        sensor_path (str): The file path to the ambient light sensor data.
-
-    Returns:
-        int: The ambient light level (lux).
-    """
+def read_ambient_light(sensor_path, logger):
     try:
         with open(sensor_path, 'r') as sensor_file:
             lux = int(sensor_file.read().strip())
+            logger.debug(f"Read ambient light level: {lux} lux")
             return lux
     except (FileNotFoundError, ValueError):
-        return 0  # Return 0 if the sensor file is missing or invalid
+        logger.warning("Warning: Ambient light sensor reading failed.")
+        raise
 
 def calculate_target_brightness(lux, max_lux=300):
-    """
-    Calculates the target brightness based on the ambient light level (lux).
-
-    Args:
-        lux (int): The ambient light level (lux).
-        max_lux (int): The maximum expected lux value for scaling (default is 300).
-
-    Returns:
-        int: The target brightness percentage (1-100), with a minimum brightness of 1%.
-    """
     if lux >= max_lux:
         return 100
-    return max(1, (lux * 100) // max_lux)  # Minimum brightness of 1%
+    return max(1, (lux * 100) // max_lux)
 
 def main():
+    args = parse_args()
+    logger = configure_logging(args.log_level)
+
     sensor_path = "/sys/bus/iio/devices/iio:device0/in_illuminance_raw"
 
-    # Initialize previous values to ensure the first loop prints the state
-    previous_brightness = None
-    previous_target = None
-    previous_lux = None
-
     while True:
-        # Read the current ambient light level
-        lux = read_ambient_light(sensor_path)
+        try:
+            lux = read_ambient_light(sensor_path, logger)
+            target_brightness = calculate_target_brightness(lux)
+            logger.debug(f"Calculated target brightness: {target_brightness}%")
+        except Exception:
+            time.sleep(1)
+            continue
 
-        # Calculate the target brightness based on lux
-        target_brightness = calculate_target_brightness(lux)
-
-        # Check if an update is necessary (values have changed)
-        current_brightness = get_brightness()
-        if (current_brightness != previous_brightness or
-            target_brightness != previous_target or
-            lux != previous_lux):
-
-            # Adjust brightness to the target level smoothly
-            adjust_brightness(target_brightness, lux)
-
-            # Update previous values
-            previous_brightness = current_brightness
-            previous_target = target_brightness
-            previous_lux = lux
-
-        # Sleep for 1 second before checking again
-        time.sleep(1)
+        adjusted = adjust_brightness_step(target_brightness, lux, logger)
+        sleep_duration = 0.1 if adjusted else 1
+        logger.debug(f"Sleeping for {sleep_duration} seconds")
+        time.sleep(sleep_duration)
 
 if __name__ == "__main__":
     main()
-
-
